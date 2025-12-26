@@ -1,611 +1,668 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-
+#!/usr/bin/env python3
 import argparse
+import csv
 import json
 import re
-import statistics
+from dataclasses import dataclass
 from pathlib import Path
-from collections import defaultdict
+from statistics import mean
+from typing import Any, Dict, List, Optional, Tuple
 
 
-FILENAME_RE = re.compile(
-    r"experiment-summary-"
-    r"(?P<benchmark>[^-]+)-"
-    r"(?P<tool>[^-]+)-"
-    r"(?P<project>[^-]+)-"
-    r"(?P<bug_id>[^-]+)-"
-    r"(?P<TP>TP\d+)-"
-    r"(?P<CP>CP\d+)-"
-    r"(?P<run>\d+)-"
-    r"(?P<hash>[a-f0-9]+)\.json"
-)
+# ----------------------------
+# Helpers
+# ----------------------------
+
+def safe_get(d: Any, path: List[str], default=None):
+    cur = d
+    for key in path:
+        if not isinstance(cur, dict) or key not in cur:
+            return default
+        cur = cur[key]
+    return cur
 
 
-# ----------------- basic parsing helpers -----------------
-
-def parse_mem_gib(mem_str):
-    if not mem_str:
-        return None
+def to_float(x) -> Optional[float]:
     try:
-        return float(str(mem_str).replace("GiB", "").strip())
+        if x is None:
+            return None
+        return float(x)
     except Exception:
         return None
 
 
-def load_json(path):
+def to_int(x) -> Optional[int]:
     try:
-        with open(str(path), "r") as f:
-            return json.load(f)
+        if x is None:
+            return None
+        if isinstance(x, bool):
+            return int(x)
+        if isinstance(x, int):
+            return x
+        if isinstance(x, float):
+            return int(x)
+        if isinstance(x, str):
+            m = re.search(r"-?\d+", x)
+            return int(m.group(0)) if m else None
+        return None
     except Exception:
         return None
 
 
-def parse_bytes(x):
-    if not x:
-        return 0
-    try:
-        return int(str(x).replace("bytes", "").strip())
-    except Exception:
-        return 0
-
-
-def normalize_space_int(x):
-    # -1 appears to mean "not available"
-    try:
-        v = int(x)
-    except Exception:
+def parse_bytes(s: Any) -> Optional[int]:
+    if s is None:
         return None
-    return None if v < 0 else v
-
-
-def safe_mean(values):
-    return statistics.mean(values) if values else None
-
-
-def safe_min(values):
-    return min(values) if values else None
-
-
-def safe_max(values):
-    return max(values) if values else None
-
-
-def ensure_dir(p):
-    if not p.exists():
-        p.mkdir(parents=True)
-
-
-# ----------------- robust "space" key handling -----------------
-
-def _norm_space_key(k):
-    try:
-        s = str(k)
-    except Exception:
-        return ""
-    s = s.strip().lower()
-    s = s.replace("_", " ").replace("-", " ")
-    s = " ".join(s.split())
-    return s
-
-
-def get_space_metric(space_dict, *names):
-    """
-    Fetch a metric from details.space robustly across key variants.
-    names are logical names like: "plausible", "generated", ...
-    """
-    if not isinstance(space_dict, dict):
-        return None
-
-    norm_map = {}
-    for k, v in space_dict.items():
-        norm_map[_norm_space_key(k)] = v
-
-    for name in names:
-        key = _norm_space_key(name)
-        if key in norm_map:
-            return normalize_space_int(norm_map.get(key))
+    if isinstance(s, int):
+        return s
+    if isinstance(s, float):
+        return int(s)
+    if isinstance(s, str):
+        m = re.search(r"(-?\d+)", s)
+        if m:
+            try:
+                return int(m.group(1))
+            except Exception:
+                return None
     return None
 
 
-def space_keys_signature(space_dict):
-    if not isinstance(space_dict, dict):
-        return []
-    try:
-        return sorted([str(k) for k in space_dict.keys()])
-    except Exception:
-        return []
+def parse_mem_gib(s: Any) -> Optional[float]:
+    if s is None:
+        return None
+    if isinstance(s, (int, float)):
+        return float(s)
+    if not isinstance(s, str):
+        return None
+
+    m = re.search(r"([0-9]*\.?[0-9]+)\s*(GiB|MiB|KiB|B|bytes)\b", s, flags=re.IGNORECASE)
+    if not m:
+        return None
+
+    val = float(m.group(1))
+    unit = m.group(2).lower()
+    if unit == "gib":
+        return val
+    if unit == "mib":
+        return val / 1024.0
+    if unit == "kib":
+        return val / (1024.0 * 1024.0)
+    if unit in ("b", "bytes"):
+        return val / (1024.0 ** 3)
+    return None
 
 
-# ----------------- discovery: support both layouts -----------------
+def detect_run_id_from_path(p: Path) -> Optional[str]:
+    parts = [seg.lower() for seg in p.parts]
+    patterns = [
+        r"^run[_-]?(\d+)$",
+        r"^seed[_-]?(\d+)$",
+        r"^rep(?:licate)?[_-]?(\d+)$",
+        r"^repeat[_-]?(\d+)$",
+        r"^trial[_-]?(\d+)$",
+    ]
+    for seg in reversed(parts):
+        for pat in patterns:
+            m = re.match(pat, seg)
+            if m:
+                base = re.sub(r"[_-]?\d+$", "", seg)
+                return f"{base}{m.group(1)}"
+    return None
 
-def iter_summary_files(root):
-    """
-    Supports both:
-    A) root/tools/experiment-summary-*.json (many)
-    B) root/<run_folder>/tools/experiment-summary-*.json (one per run folder)
-    We'll just recursively search for *tools/experiment-summary-*.json
-    """
-    root = Path(root).expanduser()
-    if not root.exists():
-        return
-    # rglob is fine; we filter to parent directory named "tools"
-    for p in root.rglob("experiment-summary-*.json"):
+
+def is_run_json(obj: Any) -> bool:
+    return isinstance(obj, dict) and ("status" in obj) and ("details" in obj or "info" in obj)
+
+
+def find_candidate_jsons(root: Path) -> List[Path]:
+    candidates: List[Path] = []
+    for p in root.rglob("*.json"):
+        if p.name.lower() in ("package.json", "composer.json"):
+            continue
         try:
-            if p.parent.name == "tools":
-                yield p
+            if p.stat().st_size > 50 * 1024 * 1024:
+                continue
+        except Exception:
+            pass
+        candidates.append(p)
+    return candidates
+
+
+def is_success_status(status: Optional[str]) -> Optional[bool]:
+    if status is None:
+        return None
+    s = status.lower()
+    if "non-zero" in s or "error" in s or "failed" in s:
+        return False
+    if "success" in s or "ok" in s or "completed" in s:
+        return True
+    return None
+
+
+def write_csv(path: Path, rows: List[Dict[str, Any]], fieldnames: List[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        w.writeheader()
+        for row in rows:
+            w.writerow(row)
+
+
+def write_jsonl(path: Path, rows: List[Dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+# ----------------------------
+# JSON-tool record model
+# ----------------------------
+
+@dataclass
+class RunRecord:
+    tool: str
+    json_path: str
+    run_id: Optional[str]
+
+    bug_subject: Optional[str]
+    bug_benchmark: Optional[str]
+    bug_id_str: Optional[str]
+    bug_numeric_id: Optional[int]
+
+    config_id: Optional[str]
+    timeout_minutes: Optional[float]
+    test_timeout_seconds: Optional[float]
+    fault_location: Optional[str]
+    passing_test_ratio: Optional[float]
+    cpus: Optional[str]
+    gpus: Optional[str]
+    params: Optional[str]
+    tag: Optional[str]
+    container_id: Optional[str]
+
+    status: Optional[str]
+    total_duration_seconds: Optional[float]
+    mem_gib: Optional[float]
+    net_rx_bytes: Optional[int]
+    net_tx_bytes: Optional[int]
+    interfaces_count: Optional[int]
+
+    search_space: Optional[int]
+    enumerations: Optional[int]
+    non_compilable: Optional[int]
+    plausible: Optional[int]
+    implausible: Optional[int]
+    generated: Optional[int]
+
+
+def normalize_record(tool: str, path: Path, obj: Dict[str, Any]) -> RunRecord:
+    bug_info = safe_get(obj, ["info", "bug-info"], {}) or {}
+    cfg_info = safe_get(obj, ["info", "config-info"], {}) or {}
+    details = safe_get(obj, ["details"], {}) or {}
+    time_d = safe_get(details, ["time"], {}) or {}
+    cont_d = safe_get(details, ["container"], {}) or {}
+    net_d = safe_get(cont_d, ["network_usage"], {}) or {}
+    space_d = safe_get(details, ["space"], {}) or {}
+
+    run_id = detect_run_id_from_path(path)
+
+    bug_numeric_id = None
+    if isinstance(bug_info.get("id"), int):
+        bug_numeric_id = bug_info.get("id")
+    else:
+        try:
+            bug_numeric_id = int(bug_info.get("id")) if bug_info.get("id") is not None else None
+        except Exception:
+            bug_numeric_id = None
+
+    return RunRecord(
+        tool=tool,
+        json_path=str(path),
+        run_id=run_id,
+
+        bug_subject=bug_info.get("subject"),
+        bug_benchmark=bug_info.get("benchmark"),
+        bug_id_str=bug_info.get("bug_id"),
+        bug_numeric_id=bug_numeric_id,
+
+        config_id=cfg_info.get("id"),
+        timeout_minutes=to_float(cfg_info.get("timeout")),
+        test_timeout_seconds=to_float(cfg_info.get("test_timeout")),
+        fault_location=cfg_info.get("fault_location"),
+        passing_test_ratio=to_float(cfg_info.get("passing_test_ratio")),
+        cpus=",".join(map(str, cfg_info.get("cpus", []))) if isinstance(cfg_info.get("cpus"), list) else (
+            str(cfg_info.get("cpus")) if cfg_info.get("cpus") is not None else None
+        ),
+        gpus=",".join(map(str, cfg_info.get("gpus", []))) if isinstance(cfg_info.get("gpus"), list) else (
+            str(cfg_info.get("gpus")) if cfg_info.get("gpus") is not None else None
+        ),
+        params=cfg_info.get("params"),
+        tag=cfg_info.get("tag"),
+        container_id=cfg_info.get("container-id"),
+
+        status=obj.get("status"),
+        total_duration_seconds=to_float(safe_get(time_d, ["total duration"])),
+        mem_gib=parse_mem_gib(cont_d.get("mem_usage")),
+        net_rx_bytes=parse_bytes(net_d.get("total_received")),
+        net_tx_bytes=parse_bytes(net_d.get("total_transmitted")),
+        interfaces_count=(int(net_d.get("interfaces_count")) if isinstance(net_d.get("interfaces_count"), int) else None),
+
+        search_space=to_int(space_d.get("search space")),
+        enumerations=to_int(space_d.get("enumerations")),
+        non_compilable=to_int(space_d.get("non-compilable")),
+        plausible=to_int(space_d.get("plausible")),
+        implausible=to_int(space_d.get("implausible")),
+        generated=to_int(space_d.get("generated")),
+    )
+
+
+def load_records(tool_name: str, tool_root: Path, strict_schema: bool = False) -> List[RunRecord]:
+    records: List[RunRecord] = []
+    for p in find_candidate_jsons(tool_root):
+        try:
+            with p.open("r", encoding="utf-8") as f:
+                obj = json.load(f)
         except Exception:
             continue
 
-
-# ----------------- graphing -----------------
-
-def generate_graphs(summary_rows, per_run_records, out_dir, tool_labels):
-    try:
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-    except Exception as e:
-        print("WARNING: Could not import matplotlib. Skipping graphs. Error: {}".format(e))
-        return
-
-    ensure_dir(out_dir)
-
-    def save_fig(fig, filename):
-        fig.tight_layout()
-        fig.savefig(str(out_dir / filename), dpi=150)
-        plt.close(fig)
-
-    def grouped_bar(ax, categories, series, series_labels, title, ylabel, ylim=None):
-        """
-        categories: list[str]
-        series: list[list[float]] aligned with categories
-        series_labels: list[str]
-        """
-        n_cat = len(categories)
-        n_ser = len(series_labels)
-        if n_cat == 0 or n_ser == 0:
-            ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
-            ax.set_axis_off()
-            return
-
-        base_x = list(range(n_cat))
-        total_width = 0.8
-        width = total_width / float(max(1, n_ser))
-
-        for i in range(n_ser):
-            vals = series[i]
-            xs = [bx - total_width / 2.0 + (i + 0.5) * width for bx in base_x]
-            ax.bar(xs, vals, width, label=series_labels[i])
-
-        ax.set_xticks(base_x)
-        ax.set_xticklabels(categories, rotation=45, ha="right", fontsize=8)
-        ax.set_title(title)
-        ax.set_ylabel(ylabel)
-        ax.legend(fontsize=8, loc="best")
-        if ylim is not None:
-            ax.set_ylim(ylim)
-
-    # ---------- Success rate by project (side-by-side for the 3 tools) ----------
-    # Compute per tool_label, per project: successes/expected from summary_rows
-    proj_tool_success = defaultdict(int)
-    proj_tool_expected = defaultdict(int)
-
-    for row in summary_rows:
-        tl = row.get("tool_label")
-        pr = row.get("project")
-        proj_tool_success[(tl, pr)] += int(row.get("successes", 0))
-        proj_tool_expected[(tl, pr)] += int(row.get("runs_expected", 0))
-
-    projects = sorted(set([r.get("project") for r in summary_rows]))
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
-
-    series = []
-    for tl in tool_labels:
-        vals = []
-        for pr in projects:
-            denom = float(proj_tool_expected.get((tl, pr), 0))
-            if denom <= 0.0:
-                vals.append(0.0)
-            else:
-                vals.append(float(proj_tool_success.get((tl, pr), 0)) / denom)
-        series.append(vals)
-
-    grouped_bar(
-        ax=ax,
-        categories=projects,
-        series=series,
-        series_labels=tool_labels,
-        title="Success rate by project (tools side-by-side)",
-        ylabel="Success rate",
-        ylim=(0.0, 1.0),
-    )
-    save_fig(fig, "success_rate_by_project_side_by_side.png")
-
-    # ---------- Mean duration by project (side-by-side) using per_run_records ----------
-    tool_proj_durs = defaultdict(list)
-    for r in per_run_records:
-        d = r.get("duration")
-        if d is None:
-            continue
-        tool_proj_durs[(r["tool_label"], r["project"])].append(d)
-
-    projects = sorted(set([r.get("project") for r in per_run_records]))
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
-
-    series = []
-    for tl in tool_labels:
-        vals = []
-        for pr in projects:
-            vals.append(safe_mean(tool_proj_durs.get((tl, pr), [])) or 0.0)
-        series.append(vals)
-
-    grouped_bar(
-        ax=ax,
-        categories=projects,
-        series=series,
-        series_labels=tool_labels,
-        title="Mean duration by project (tools side-by-side)",
-        ylabel="Mean duration (s)",
-        ylim=None,
-    )
-    save_fig(fig, "duration_mean_by_project_side_by_side.png")
-
-    # ---------- Generated patches: mean by project (side-by-side) ----------
-    tool_proj_gen = defaultdict(list)
-    for r in per_run_records:
-        g = r.get("space_generated")
-        if g is None:
-            continue
-        tool_proj_gen[(r["tool_label"], r["project"])].append(g)
-
-    projects = sorted(set([r.get("project") for r in per_run_records]))
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
-
-    series = []
-    for tl in tool_labels:
-        vals = []
-        for pr in projects:
-            vals.append(safe_mean(tool_proj_gen.get((tl, pr), [])) or 0.0)
-        series.append(vals)
-
-    grouped_bar(
-        ax=ax,
-        categories=projects,
-        series=series,
-        series_labels=tool_labels,
-        title="Mean generated patches by project (tools side-by-side)",
-        ylabel="Mean generated patches",
-        ylim=None,
-    )
-    save_fig(fig, "generated_mean_by_project_side_by_side.png")
-
-    # ---------- Plausible coverage by project (side-by-side) ----------
-    # fraction of runs where plausible is present (not None)
-    tool_proj_total = defaultdict(int)
-    tool_proj_pl_present = defaultdict(int)
-
-    for r in per_run_records:
-        tl = r["tool_label"]
-        pr = r["project"]
-        tool_proj_total[(tl, pr)] += 1
-        if r.get("space_plausible") is not None:
-            tool_proj_pl_present[(tl, pr)] += 1
-
-    projects = sorted(set([r.get("project") for r in per_run_records]))
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
-
-    series = []
-    for tl in tool_labels:
-        vals = []
-        for pr in projects:
-            denom = float(tool_proj_total.get((tl, pr), 0))
-            if denom <= 0.0:
-                vals.append(0.0)
-            else:
-                vals.append(float(tool_proj_pl_present.get((tl, pr), 0)) / denom)
-        series.append(vals)
-
-    grouped_bar(
-        ax=ax,
-        categories=projects,
-        series=series,
-        series_labels=tool_labels,
-        title="Plausible field coverage by project (tools side-by-side)",
-        ylabel="Coverage (fraction of runs)",
-        ylim=(0.0, 1.0),
-    )
-    save_fig(fig, "plausible_coverage_by_project_side_by_side.png")
-
-    # ---------- Histograms per tool (generated) ----------
-    # (These are useful even when "side-by-side bars" exist)
-    for tl in tool_labels:
-        vals = [r.get("space_generated") for r in per_run_records
-                if r.get("tool_label") == tl and r.get("space_generated") is not None]
-        fig = plt.figure()
-        ax = fig.add_subplot(111)
-        if vals:
-            ax.hist(vals, bins=30)
-            ax.set_xlabel("Generated patches")
-            ax.set_ylabel("Count")
-            ax.set_title("Generated patches distribution ({})".format(tl))
-        else:
-            ax.text(0.5, 0.5, "No generated data found", ha="center", va="center", transform=ax.transAxes)
-            ax.set_axis_off()
-        save_fig(fig, "generated_hist_{}.png".format(tl))
-
-    print("Wrote graphs to {}".format(out_dir))
-
-
-# ----------------- main -----------------
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "roots",
-        nargs=3,
-        help="Three result roots (one per tool). Each root may contain tools/ directly or run-subfolders each containing tools/."
-    )
-    parser.add_argument(
-        "--labels",
-        default="tool1,tool2,tool3",
-        help="Comma-separated labels for the 3 tools (default: tool1,tool2,tool3)"
-    )
-    parser.add_argument(
-        "--expected-runs",
-        type=int,
-        default=3,
-        help="Expected number of runs per bug (default: 3)"
-    )
-    parser.add_argument(
-        "--no-graphs",
-        action="store_true",
-        help="Disable PNG graph generation"
-    )
-    args = parser.parse_args()
-
-    tool_labels = [s.strip() for s in str(args.labels).split(",") if s.strip()]
-    if len(tool_labels) != 3:
-        raise RuntimeError("--labels must contain exactly 3 comma-separated labels")
-
-    # data/ next to main.py
-    script_dir = Path(__file__).parent
-    data_dir = script_dir / "data"
-    ensure_dir(data_dir)
-    graphs_dir = data_dir / "graphs"
-    ensure_dir(graphs_dir)
-
-    groups = defaultdict(list)
-    per_run_records = []
-    all_summary_rows = []
-
-    # Read all three roots, annotate each record with tool_label from args
-    for root, tool_label in zip(args.roots, tool_labels):
-        root_path = Path(root).expanduser()
-        if not root_path.exists():
-            print("WARNING: root does not exist: {}".format(root_path))
-            continue
-
-        # discover json files under this root
-        for path in iter_summary_files(root_path):
-            m = FILENAME_RE.match(path.name)
-            if not m:
+        if not is_run_json(obj):
+            if strict_schema:
                 continue
+            continue
 
-            info = m.groupdict()
-            run = int(info["run"])
+        records.append(normalize_record(tool_name, p, obj))
+    return records
 
-            data = load_json(path)
-            if not data:
-                continue
 
-            status = data.get("status")
+def runrecord_to_dict(r: RunRecord) -> Dict[str, Any]:
+    return {
+        "tool": r.tool,
+        "acr_setting": None,
+        "patch_files": None,
 
-            details = data.get("details", {})
-            time_info = details.get("time", {})
-            container = details.get("container", {})
-            network = container.get("network_usage", {})
-            space = details.get("space", {})
+        "json_path": r.json_path,
+        "run_id": r.run_id,
 
-            duration = time_info.get("total duration")
-            mem_gib = parse_mem_gib(container.get("mem_usage"))
-            rx_b = parse_bytes(network.get("total_received"))
-            tx_b = parse_bytes(network.get("total_transmitted"))
+        "bug_subject": r.bug_subject,
+        "bug_benchmark": r.bug_benchmark,
+        "bug_id": r.bug_id_str,
+        "bug_numeric_id": r.bug_numeric_id,
 
-            # robust space extraction
-            space_search_space = get_space_metric(space, "search space", "search_space")
-            space_enumerations = get_space_metric(space, "enumerations", "enumeration")
-            space_non_compilable = get_space_metric(space, "non compilable", "non-compilable", "non_compilable")
-            space_plausible = get_space_metric(space, "plausible", "plausible patches", "plausible_patches")
-            space_implausible = get_space_metric(space, "implausible", "implausible patches", "implausible_patches")
-            space_generated = get_space_metric(space, "generated", "generated patches", "generated_patches")
+        "config_id": r.config_id,
+        "timeout_minutes": r.timeout_minutes,
+        "test_timeout_seconds": r.test_timeout_seconds,
+        "fault_location": r.fault_location,
+        "passing_test_ratio": r.passing_test_ratio,
+        "cpus": r.cpus,
+        "gpus": r.gpus,
+        "params": r.params,
+        "tag": r.tag,
+        "container_id": r.container_id,
 
-            # diagnostics
-            raw_space_keys = space_keys_signature(space)
-            raw_plausible = space.get("plausible") if isinstance(space, dict) else None
+        "status": r.status,
+        "success": is_success_status(r.status),
+        "total_duration_seconds": r.total_duration_seconds,
+        "mem_gib": r.mem_gib,
+        "net_rx_bytes": r.net_rx_bytes,
+        "net_tx_bytes": r.net_tx_bytes,
+        "interfaces_count": r.interfaces_count,
 
-            record = {
-                "run": run,
-                "status": status,
-                "duration": duration,
-                "mem_gib": mem_gib,
-                "rx_bytes": rx_b,
-                "tx_bytes": tx_b,
-                "space_search_space": space_search_space,
-                "space_enumerations": space_enumerations,
-                "space_non_compilable": space_non_compilable,
-                "space_plausible": space_plausible,
-                "space_implausible": space_implausible,
-                "space_generated": space_generated,
-            }
+        "search_space": r.search_space,
+        "enumerations": r.enumerations,
+        "non_compilable": r.non_compilable,
+        "plausible": r.plausible,
+        "implausible": r.implausible,
+        "generated": r.generated,
+    }
 
-            # IMPORTANT: key includes tool_label, so tools stay separate for aggregation/graphs
-            key = (
-                tool_label,
-                info["benchmark"],
-                info["project"],
-                info["bug_id"],
-                info["TP"],
-                info["CP"],
-            )
-            groups[key].append(record)
 
-            per_run_records.append({
-                "tool_label": tool_label,
-                "benchmark": info["benchmark"],
-                "tool_in_filename": info["tool"],
-                "project": info["project"],
-                "bug_id": info["bug_id"],
-                "TP": info["TP"],
-                "CP": info["CP"],
-                "run": run,
-                "status": status,
-                "duration": duration,
-                "mem_gib": mem_gib,
-                "rx_bytes": rx_b,
-                "tx_bytes": tx_b,
-                "space_search_space": space_search_space,
-                "space_enumerations": space_enumerations,
-                "space_non_compilable": space_non_compilable,
-                "space_plausible": space_plausible,
-                "space_implausible": space_implausible,
-                "space_generated": space_generated,
-                "raw_space_keys": raw_space_keys,
-                "raw_plausible": raw_plausible,
-                "file": str(path),
+# ----------------------------
+# ACR collector (robust discovery)
+# ----------------------------
+
+def parse_acr_bug_folder_name(name: str):
+    """
+    Example: hadoop_0308423b_2025-10-16_21-33-55
+    Returns: (project, bug_id, timestamp_str)
+    """
+    parts = name.split("_")
+    project = parts[0] if len(parts) >= 1 else "UNKNOWN"
+    bug_id = parts[1] if len(parts) >= 2 else None
+    timestamp = "_".join(parts[2:]) if len(parts) >= 3 else None
+    return project, bug_id, timestamp
+
+
+def count_patch_files_in_dir(output_dir: Path) -> int:
+    n = 0
+    for p in output_dir.rglob("*"):
+        if p.is_file() and "patch" in p.name.lower():
+            n += 1
+    return n
+
+
+def _find_bugs_dirs(setting_dir: Path) -> List[Path]:
+    """
+    Find directories named 'bugs' under setting_dir (up to a few levels).
+    """
+    found: List[Path] = []
+    # depth-limited search: setting_dir/*/bugs, setting_dir/*/*/bugs, setting_dir/bugs
+    candidates = [
+        setting_dir / "bugs",
+    ]
+    for d1 in setting_dir.iterdir() if setting_dir.exists() else []:
+        if d1.is_dir():
+            candidates.append(d1 / "bugs")
+            for d2 in d1.iterdir():
+                if d2.is_dir():
+                    candidates.append(d2 / "bugs")
+
+    for c in candidates:
+        if c.exists() and c.is_dir() and c.name == "bugs":
+            found.append(c)
+
+    # de-dup
+    uniq = []
+    seen = set()
+    for p in found:
+        rp = str(p.resolve())
+        if rp not in seen:
+            seen.add(rp)
+            uniq.append(p)
+    return uniq
+
+
+def collect_acr_runs(acr_root: Path, verbose: bool = False) -> List[Dict[str, Any]]:
+    """
+    For ACR:
+    - One row per (tool, bug)
+    - success = True if ANY output_* contains >=1 patch file
+    - generated = total number of patch files across ALL outputs
+    """
+    rows: List[Dict[str, Any]] = []
+
+    if not acr_root.exists() or not acr_root.is_dir():
+        return rows
+
+    # settings = llama3, llama3:70b
+    setting_dirs = [p for p in acr_root.iterdir() if p.is_dir()]
+
+    if verbose:
+        print(f"[ACR] settings: {[p.name for p in setting_dirs]}")
+
+    for setting_dir in setting_dirs:
+        tool_name = f"acr_{setting_dir.name.replace(':', '_')}"
+
+        bug_dirs = [p for p in setting_dir.iterdir() if p.is_dir()]
+
+        if verbose:
+            print(f"[ACR] {tool_name}: {len(bug_dirs)} bug dirs")
+
+        for bug_dir in bug_dirs:
+            project, bug_id, _ts = parse_acr_bug_folder_name(bug_dir.name)
+
+            out_dirs = [
+                p for p in bug_dir.iterdir()
+                if p.is_dir() and p.name.lower().startswith("output_")
+            ]
+
+            total_patches = 0
+            success = False
+
+            for out_dir in out_dirs:
+                patch_files = count_patch_files_in_dir(out_dir)
+                total_patches += patch_files
+                if patch_files > 0:
+                    success = True
+
+                if verbose:
+                    print(
+                        f"[ACR] {tool_name} | {bug_dir.name} | "
+                        f"{out_dir.name} | patches={patch_files}"
+                    )
+
+            if verbose:
+                print(
+                    f"[ACR-BUG] {tool_name} | {bug_dir.name} | "
+                    f"success={success} | generated={total_patches}"
+                )
+
+            rows.append({
+                "tool": tool_name,
+                "patch_files": total_patches,   # keep for debugging if you like
+
+                "json_path": str(bug_dir),
+                "run_id": bug_dir.name,         # bug-level run id
+
+                "bug_subject": project,
+                "bug_benchmark": None,
+                "bug_id": bug_id,
+                "bug_numeric_id": None,
+
+                "config_id": None,
+                "timeout_minutes": None,
+                "test_timeout_seconds": None,
+                "fault_location": None,
+                "passing_test_ratio": None,
+                "cpus": None,
+                "gpus": None,
+                "params": None,
+                "tag": None,
+                "container_id": None,
+
+                "status": "filesystem_aggregated",
+                "success": success,             # ✅ per bug
+                "total_duration_seconds": None,
+                "mem_gib": None,
+                "net_rx_bytes": None,
+                "net_tx_bytes": None,
+                "interfaces_count": None,
+
+                "search_space": None,
+                "enumerations": None,
+                "non_compilable": None,
+                "plausible": None,
+                "implausible": None,
+                "generated": total_patches,     # ✅ per bug
             })
 
-    # ---------- Coverage per tool ----------
-    coverage_by_tool = {}
-    for tl in tool_labels:
-        runs = [r for r in per_run_records if r.get("tool_label") == tl]
-        cov = {
-            "runs_total": len(runs),
-            "runs_with_generated": sum(1 for r in runs if r.get("space_generated") is not None),
-            "runs_with_plausible": sum(1 for r in runs if r.get("space_plausible") is not None),
-            "runs_with_implausible": sum(1 for r in runs if r.get("space_implausible") is not None),
-            "runs_with_non_compilable": sum(1 for r in runs if r.get("space_non_compilable") is not None),
-            "runs_with_enumerations": sum(1 for r in runs if r.get("space_enumerations") is not None),
-            "runs_with_search_space": sum(1 for r in runs if r.get("space_search_space") is not None),
-        }
+    if verbose:
+        print(f"[ACR] total ACR bug-level rows collected: {len(rows)}")
 
-        if cov["runs_with_plausible"] == 0:
-            sigs = []
-            seen = set()
-            for r in runs:
-                keys = tuple(r.get("raw_space_keys") or [])
-                if keys and keys not in seen:
-                    seen.add(keys)
-                    sigs.append(list(keys))
-                if len(sigs) >= 5:
-                    break
-            cov["example_space_key_sets"] = sigs
+    return rows
 
-            raw_pl = []
-            for r in runs:
-                if r.get("raw_plausible") is not None:
-                    raw_pl.append(r.get("raw_plausible"))
-                if len(raw_pl) >= 10:
-                    break
-            cov["raw_plausible_samples"] = raw_pl
 
-        coverage_by_tool[tl] = cov
+# ----------------------------
+# Aggregations (dict-row based, includes ACR)
+# ----------------------------
 
-    with open(str(data_dir / "coverage_by_tool.json"), "w") as f:
-        json.dump(coverage_by_tool, f, indent=2)
-    print("Wrote {}".format(data_dir / "coverage_by_tool.json"))
-    print("Coverage by tool: {}".format(coverage_by_tool))
+def aggregate_per_tool_from_rows(run_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    by_tool: Dict[str, List[Dict[str, Any]]] = {}
+    for r in run_rows:
+        by_tool.setdefault(r.get("tool", "UNKNOWN"), []).append(r)
 
-    # ---------- Per-group summary (now includes tool_label) ----------
-    summary_rows = []
+    out: List[Dict[str, Any]] = []
+    for tool, rs in sorted(by_tool.items()):
+        bugs = set((r.get("bug_id") or str(r.get("bug_numeric_id")) or "UNKNOWN_BUG") for r in rs)
+        out.append({
+            "tool": tool,
+            "runs_found": len(rs),
+            "unique_bugs": len(bugs),
+            "success_runs": sum(1 for r in rs if r.get("success") is True),
+            "failure_runs": sum(1 for r in rs if r.get("success") is False),
+            "unknown_status_runs": sum(1 for r in rs if r.get("success") is None),
+        })
+    return out
 
-    for key in sorted(groups.keys()):
-        tool_label, benchmark, project, bug_id, TP, CP = key
-        records = groups[key]
 
-        runs_found = set([r["run"] for r in records])
-        missing_runs = sorted(set(range(args.expected_runs)) - runs_found)
+def record_key_from_row(r: Dict[str, Any]) -> Tuple[str, str]:
+    bug = r.get("bug_id") or (str(r.get("bug_numeric_id")) if r.get("bug_numeric_id") is not None else "UNKNOWN_BUG")
+    return (r.get("tool", "UNKNOWN"), bug)
 
-        successes = [r for r in records if r.get("status") == "Success"]
-        durations = [r["duration"] for r in records if r.get("duration") is not None]
-        mems = [r["mem_gib"] for r in records if r.get("mem_gib") is not None]
 
-        generated = [r["space_generated"] for r in records if r.get("space_generated") is not None]
-        plausible = [r["space_plausible"] for r in records if r.get("space_plausible") is not None]
-        implausible = [r["space_implausible"] for r in records if r.get("space_implausible") is not None]
-        noncomp = [r["space_non_compilable"] for r in records if r.get("space_non_compilable") is not None]
-        enumerations = [r["space_enumerations"] for r in records if r.get("space_enumerations") is not None]
-        search_space = [r["space_search_space"] for r in records if r.get("space_search_space") is not None]
+def aggregate_per_bug_from_rows(run_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    by_bug: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+    for r in run_rows:
+        by_bug.setdefault(record_key_from_row(r), []).append(r)
 
-        row = {
-            "tool_label": tool_label,
-            "benchmark": benchmark,
+    out: List[Dict[str, Any]] = []
+    for (tool, bug), rs in sorted(by_bug.items(), key=lambda x: (x[0][0], x[0][1])):
+        durations = [r.get("total_duration_seconds") for r in rs if isinstance(r.get("total_duration_seconds"), (int, float))]
+        mems = [r.get("mem_gib") for r in rs if isinstance(r.get("mem_gib"), (int, float))]
+
+        succ = [r.get("success") for r in rs]
+        succ_known = [s for s in succ if s is not None]
+
+        out.append({
+            "tool": tool,
+            "bug": bug,
+            "subject": next((r.get("bug_subject") for r in rs if r.get("bug_subject")), None),
+            "benchmark": next((r.get("bug_benchmark") for r in rs if r.get("bug_benchmark")), None),
+
+            "runs_found": len(rs),
+            "success_runs": sum(1 for s in succ_known if s is True),
+            "failure_runs": sum(1 for s in succ_known if s is False),
+            "unknown_status_runs": sum(1 for s in succ if s is None),
+
+            "avg_duration_s": (mean(durations) if durations else None),
+            "min_duration_s": (min(durations) if durations else None),
+            "max_duration_s": (max(durations) if durations else None),
+
+            "avg_mem_gib": (mean(mems) if mems else None),
+            "max_mem_gib": (max(mems) if mems else None),
+        })
+    return out
+
+
+def aggregate_acr_patchfiles_per_project(run_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    rows = [r for r in run_rows if r.get("tool") == "acr"]
+    by: Dict[Tuple[str, str], int] = {}
+    for r in rows:
+        key = (r.get("acr_setting") or "UNKNOWN", r.get("bug_subject") or "UNKNOWN")
+        by[key] = by.get(key, 0) + int(r.get("patch_files") or 0)
+
+    out: List[Dict[str, Any]] = []
+    for (setting, project), total in sorted(by.items()):
+        out.append({
+            "acr_setting": setting,
             "project": project,
-            "bug_id": bug_id,
-            "TP": TP,
-            "CP": CP,
-            "runs_found": len(records),
-            "runs_expected": args.expected_runs,
-            "missing_runs": ",".join([str(x) for x in missing_runs]),
-            "successes": len(successes),
-            "success_rate": float(len(successes)) / float(args.expected_runs) if args.expected_runs else 0.0,
-            "duration_mean": safe_mean(durations),
-            "duration_min": safe_min(durations),
-            "duration_max": safe_max(durations),
-            "mem_mean_gib": safe_mean(mems),
-            "mem_max_gib": safe_max(mems),
-            "rx_bytes_total": sum([int(r.get("rx_bytes", 0)) for r in records]),
-            "tx_bytes_total": sum([int(r.get("tx_bytes", 0)) for r in records]),
-            "statuses": ";".join(
-                ["{}:{}".format(r["run"], r.get("status")) for r in sorted(records, key=lambda x: x["run"])]
-            ),
+            "total_patch_files": total,
+        })
+    return out
 
-            # Patch-space aggregates
-            "generated_mean": safe_mean(generated),
-            "generated_sum": sum(generated) if generated else None,
-            "plausible_mean": safe_mean(plausible),
-            "plausible_sum": sum(plausible) if plausible else None,
-            "implausible_mean": safe_mean(implausible),
-            "implausible_sum": sum(implausible) if implausible else None,
-            "non_compilable_mean": safe_mean(noncomp),
-            "non_compilable_sum": sum(noncomp) if noncomp else None,
-            "enumerations_mean": safe_mean(enumerations),
-            "enumerations_sum": sum(enumerations) if enumerations else None,
-            "search_space_mean": safe_mean(search_space),
-            "search_space_sum": sum(search_space) if search_space else None,
-        }
 
-        summary_rows.append(row)
+# ----------------------------
+# CLI + Main
+# ----------------------------
 
-    # ---------- Write CSV/JSON ----------
-    csv_path = data_dir / "summary.csv"
-    with open(str(csv_path), "w") as f:
-        if summary_rows:
-            headers = list(summary_rows[0].keys())
-            f.write(",".join(headers) + "\n")
-            for row in summary_rows:
-                f.write(",".join("" if row[h] is None else str(row[h]) for h in headers) + "\n")
+def parse_args() -> argparse.Namespace:
+    ap = argparse.ArgumentParser(
+        description="Analyze APRTools JSON outputs + ACR patch-file counting."
+    )
+    ap.add_argument("--repairllama", type=str, required=True, help="Path to repairllama root directory")
+    ap.add_argument("--cardumen", type=str, required=True, help="Path to cardumen root directory")
+    ap.add_argument("--arja", type=str, required=True, help="Path to arja root directory")
+    ap.add_argument("--acr", type=str, default=None, help="Path to ACR root directory (optional)")
+    ap.add_argument("--out", type=str, default="out", help="Output directory (default: out)")
+    ap.add_argument("--jsonl", action="store_true", help="Also write runs.jsonl")
+    ap.add_argument("--strict", action="store_true", help="Strictly require run-json schema")
+    ap.add_argument("--verbose", action="store_true", help="Verbose discovery output (especially for ACR)")
+    return ap.parse_args()
 
-    json_path = data_dir / "summary.json"
-    with open(str(json_path), "w") as f:
-        json.dump(summary_rows, f, indent=2)
 
-    print("Wrote {}".format(csv_path))
-    print("Wrote {}".format(json_path))
+def main() -> int:
+    args = parse_args()
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    # ---------- Graphs (side-by-side for the 3 tools) ----------
-    if not args.no_graphs:
-        generate_graphs(
-            summary_rows=summary_rows,
-            per_run_records=per_run_records,
-            out_dir=graphs_dir,
-            tool_labels=tool_labels
+    # JSON tools only
+    tool_paths = {
+        "repairllama": Path(args.repairllama),
+        "cardumen": Path(args.cardumen),
+        "arja": Path(args.arja),
+    }
+
+    all_records: List[RunRecord] = []
+    for tool, root in tool_paths.items():
+        if not root.exists():
+            raise FileNotFoundError(f"{tool} path does not exist: {root}")
+        all_records.extend(load_records(tool, root, strict_schema=args.strict))
+
+    run_rows: List[Dict[str, Any]] = [runrecord_to_dict(r) for r in all_records]
+
+    # Add ACR rows
+    if args.acr:
+        acr_root = Path(args.acr)
+        if not acr_root.exists():
+            raise FileNotFoundError(f"ACR path does not exist: {acr_root}")
+        acr_rows = collect_acr_runs(acr_root, verbose=args.verbose)
+        run_rows.extend(acr_rows)
+
+        if args.verbose:
+            print(f"[ACR] appended {len(acr_rows)} rows to run_rows")
+
+    # runs.csv schema (fixed order)
+    run_fields = [
+        "tool", "acr_setting", "patch_files",
+        "json_path", "run_id",
+        "bug_subject", "bug_benchmark", "bug_id", "bug_numeric_id",
+        "config_id", "timeout_minutes", "test_timeout_seconds", "fault_location", "passing_test_ratio",
+        "cpus", "gpus", "params", "tag", "container_id",
+        "status", "success", "total_duration_seconds",
+        "mem_gib", "net_rx_bytes", "net_tx_bytes", "interfaces_count",
+        "search_space", "enumerations", "non_compilable", "plausible", "implausible", "generated",
+    ]
+
+    write_csv(out_dir / "runs.csv", run_rows, run_fields)
+    if args.jsonl:
+        write_jsonl(out_dir / "runs.jsonl", run_rows)
+
+    # Summaries INCLUDE ACR (dict-row based)
+    bug_rows = aggregate_per_bug_from_rows(run_rows)
+    write_csv(
+        out_dir / "bugs_summary.csv",
+        bug_rows,
+        [
+            "tool", "bug", "subject", "benchmark",
+            "runs_found", "success_runs", "failure_runs", "unknown_status_runs",
+            "avg_duration_s", "min_duration_s", "max_duration_s",
+            "avg_mem_gib", "max_mem_gib",
+        ],
+    )
+
+    tool_rows = aggregate_per_tool_from_rows(run_rows)
+    write_csv(
+        out_dir / "tools_summary_all.csv",
+        tool_rows,
+        ["tool", "runs_found", "unique_bugs", "success_runs", "failure_runs", "unknown_status_runs"],
+    )
+
+    if args.acr:
+        acr_proj_rows = aggregate_acr_patchfiles_per_project(run_rows)
+        write_csv(
+            out_dir / "acr_patchfiles_per_project.csv",
+            acr_proj_rows,
+            ["acr_setting", "project", "total_patch_files"],
         )
+
+    # Console summary
+    print(f"Parsed JSON-tool run records: {len(all_records)}")
+    print(f"Total run rows (including ACR if provided): {len(run_rows)}")
+    print(f"Wrote: {out_dir / 'runs.csv'}")
+    print(f"Wrote: {out_dir / 'bugs_summary.csv'}")
+    print(f"Wrote: {out_dir / 'tools_summary_all.csv'}")
+    if args.acr:
+        print(f"Wrote: {out_dir / 'acr_patchfiles_per_project.csv'}")
+    if args.jsonl:
+        print(f"Wrote: {out_dir / 'runs.jsonl'}")
+
+    for row in tool_rows:
+        print(
+            f"- {row['tool']}: runs={row['runs_found']}, bugs={row['unique_bugs']}, "
+            f"success={row['success_runs']}, fail={row['failure_runs']}, unknown={row['unknown_status_runs']}"
+        )
+
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

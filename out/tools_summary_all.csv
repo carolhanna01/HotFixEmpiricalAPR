@@ -1,0 +1,6 @@
+tool,runs_found,unique_bugs,success_runs,failure_runs,unknown_status_runs
+acr_llama3,104,104,59,45,0
+acr_llama3_70b,79,79,11,68,0
+arja,190,65,0,121,69
+cardumen,189,66,37,123,29
+repairllama,200,66,105,92,3

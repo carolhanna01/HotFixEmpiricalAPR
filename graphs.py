@@ -5,6 +5,8 @@ import math
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from pathlib import Path
+from typing import Iterable, Optional
 
 
 RUNS_CSV = "out/runs.csv"
@@ -422,6 +424,205 @@ def plot_acr_patchfiles(acr: pd.DataFrame) -> None:
         ax.legend(fontsize=8)
         savefig("acr_top_projects_patch_files_scatter.png")
 
+def _to_num(df: pd.DataFrame, cols: Iterable[str]) -> None:
+    for c in cols:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+def _sentinel_to_nan(df: pd.DataFrame, cols: Iterable[str], sentinel: float = -1) -> None:
+    for c in cols:
+        if c in df.columns:
+            df.loc[df[c] == sentinel, c] = np.nan
+
+def _pick_first_col(df: pd.DataFrame, candidates: list[str]) -> Optional[str]:
+    for c in candidates:
+        if c in df.columns:
+            return c
+    return None
+
+def _save(fig: plt.Figure, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.tight_layout()
+    fig.savefig(path, dpi=200)
+    plt.close(fig)
+
+def _safe_series_str(s: pd.Series) -> pd.Series:
+    # helps avoid NaN labels in groupbys
+    return s.astype(str).replace({"nan": "∅", "None": "∅"})
+
+
+# ---- the actual plotting function you call from main() ----------------------
+
+def plot_runs(runs: pd.DataFrame) -> None:
+    """
+    Plots generated/plausible/implausible/non_compilable from runs.csv.
+
+    Adds:
+      - bug count per tool (log scale)
+      - patch count per bug_subject (log scale)
+    """
+    outdir = Path(OUTDIR) / "runs"
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    metrics = [c for c in ["generated", "plausible", "implausible", "non_compilable"] if c in runs.columns]
+    if not metrics:
+        print("plot_runs: no patch metric columns found (generated/plausible/...). Skipping.")
+        return
+
+    df = runs.copy()
+
+    # Clean numeric + sentinel -1 to NaN
+    _to_num(df, metrics)
+    _sentinel_to_nan(df, metrics, sentinel=-1)
+
+    # ----------------------------------------------------------------------
+    # 0) Identify bug key (what defines a "bug" in runs.csv)
+    # ----------------------------------------------------------------------
+    bug_key = _pick_first_col(df, ["bug_id", "bug_subject", "bug", "issue_id", "instance_id"])
+    # We'll still plot by tool even if we can't uniquely count bugs; we just can't do bug-count-per-tool reliably.
+    tool_col = _pick_first_col(df, ["tool", "acr_tool", "agent", "model"])
+    subj_col = "bug_subject" if "bug_subject" in df.columns else None
+
+    # ----------------------------------------------------------------------
+    # 1) Histograms for each metric (unchanged)
+    # ----------------------------------------------------------------------
+    for m in metrics:
+        series = df[m].dropna()
+        if series.empty:
+            continue
+        fig, ax = plt.subplots(figsize=(8, 5))
+        ax.hist(series.to_numpy(dtype=float), bins=30)
+        ax.set_title(f"runs: distribution of {m}")
+        ax.set_xlabel(m)
+        ax.set_ylabel("count")
+        _save(fig, outdir / f"hist_{m}.png")
+
+    # ----------------------------------------------------------------------
+    # 2) Bug count per tool (LOG SCALE)
+    # ----------------------------------------------------------------------
+    if tool_col and bug_key:
+        g = df.copy()
+        g[tool_col] = _safe_series_str(g[tool_col])
+        g[bug_key] = _safe_series_str(g[bug_key])
+
+        bug_counts = (
+            g.groupby(tool_col, dropna=False)[bug_key]
+            .nunique(dropna=True)  # bug ids are strings already, so dropna is fine
+            .sort_values(ascending=False)
+        )
+
+        # keep plot readable
+        top_n = 25
+        if len(bug_counts) > top_n:
+            bug_counts = bug_counts.head(top_n)
+
+        if bug_counts.sum() > 0:
+            fig, ax = plt.subplots(figsize=(max(10, 0.6 * len(bug_counts)), 6))
+            ax.bar(np.arange(len(bug_counts)), bug_counts.to_numpy(dtype=float))
+            ax.set_title(f"runs: bug count per {tool_col} (unique {bug_key}, top {len(bug_counts)})")
+            ax.set_xlabel(tool_col)
+            ax.set_ylabel(f"unique {bug_key} (log scale)")
+            ax.set_yscale("log")
+            ax.set_xticks(np.arange(len(bug_counts)))
+            ax.set_xticklabels(list(bug_counts.index), rotation=45, ha="right")
+            _save(fig, outdir / f"bug_count_by_{tool_col}_log.png")
+
+    # ----------------------------------------------------------------------
+    # 3) Stacked bars by a grouping column (prefer tool) (unchanged)
+    # ----------------------------------------------------------------------
+    group_col = _pick_first_col(df, ["tool", "acr_tool", "agent", "model", "bug_subject", "bug_benchmark"])
+    if group_col:
+        gdf = df.copy()
+        gdf[group_col] = _safe_series_str(gdf[group_col])
+
+        agg = gdf.groupby(group_col, dropna=False)[metrics].sum(min_count=1).fillna(0.0)
+        order = agg.sum(axis=1).sort_values(ascending=False).index
+        agg = agg.loc[order]
+
+        top_n = 20
+        if len(agg) > top_n:
+            agg = agg.head(top_n)
+        
+        fig, ax = plt.subplots(figsize=(max(10, 0.6 * len(agg)), 6))
+        x = np.arange(len(agg.index))
+
+        # Drop all-zero rows (log scale can't display them)
+        totals = agg[metrics].sum(axis=1)
+        agg_plot = agg.loc[totals > 0].copy()
+
+        x = np.arange(len(agg_plot.index))
+        bottom = np.zeros(len(agg_plot), dtype=float)
+
+        for m in metrics:
+            vals = agg_plot[m].to_numpy(dtype=float)
+            ax.bar(x, vals, bottom=bottom, label=m)
+            bottom += vals
+
+        ax.set_title(f"Patch counts by {group_col} (log scale)", fontsize=18)
+        ax.set_xlabel(group_col, fontsize=14)
+        ax.set_ylabel("count (sum across runs)", fontsize=14)
+        ax.set_xticks(x)
+        ax.set_xticklabels(list(agg_plot.index), rotation=45, ha="right")
+
+        # LOG SCALE
+        ax.set_yscale("log")
+
+        # Optional: make the lower bound sane so tiny counts are visible
+        ax.set_ylim(bottom=max(1, np.nanmin(bottom[bottom > 0]) if np.any(bottom > 0) else 1))
+
+        ax.legend()
+        _save(fig, outdir / f"stacked_by_{group_col}_log.png")
+
+
+    # ----------------------------------------------------------------------
+    # 4) Scatter: plausible vs generated (unchanged)
+    # ----------------------------------------------------------------------
+    if "generated" in df.columns and "plausible" in df.columns:
+        d = df.dropna(subset=["generated", "plausible"]).copy()
+        if not d.empty:
+            fig, ax = plt.subplots(figsize=(6.5, 6))
+            ax.scatter(d["generated"].to_numpy(dtype=float), d["plausible"].to_numpy(dtype=float), alpha=0.6)
+            ax.set_title("runs: plausible vs generated (per run)")
+            ax.set_xlabel("generated")
+            ax.set_ylabel("plausible")
+            _save(fig, outdir / "scatter_plausible_vs_generated.png")
+
+    # ----------------------------------------------------------------------
+    # 5) Patch count per bug_subject (LOG SCALE)
+    # ----------------------------------------------------------------------
+    if subj_col:
+        g = df.copy()
+        g[subj_col] = _safe_series_str(g[subj_col])
+
+        agg2 = g.groupby(subj_col, dropna=False)[metrics].sum(min_count=1).fillna(0.0)
+        order2 = agg2.sum(axis=1).sort_values(ascending=False).index
+        agg2 = agg2.loc[order2]
+
+        # readability cap (still very skewed, so log scale helps a lot)
+        top_n = 10
+        if len(agg2) > top_n:
+            agg2 = agg2.head(top_n)
+
+        totals = agg2.sum(axis=1)
+        if totals.sum() > 0:
+            fig, ax = plt.subplots(figsize=(max(10, 0.55 * len(agg2)), 6))
+            x = np.arange(len(agg2.index))
+            bottom = np.zeros(len(agg2), dtype=float)
+            for m in metrics:
+                vals = agg2[m].to_numpy(dtype=float)
+                ax.bar(x, vals, bottom=bottom, label=m)
+                bottom += vals 
+
+            ax.set_title(f"Patch counts by project across tools (log scale)",fontsize=18)
+            ax.set_xlabel("Project",fontsize=14)
+            ax.set_ylabel("count (sum across runs, log scale)",fontsize=14)
+            ax.set_yscale("log")
+            ax.set_xticks(x)
+            ax.set_xticklabels(list(agg2.index), rotation=45, ha="right")
+            ax.legend()
+            _save(fig, outdir / f"stacked_by_{subj_col}_log.png")
+
+    print(f"plot_runs: wrote plots to {outdir}")
 
 def main() -> None:
     ensure_outdir(OUTDIR)
@@ -437,6 +638,7 @@ def main() -> None:
     plot_bugs_summary(bugs)
     plot_runs(runs)
     plot_acr_patchfiles(acr)
+    plot_runs(runs)
 
     print("done.")
 

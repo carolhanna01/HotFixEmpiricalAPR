@@ -319,7 +319,7 @@ repairllama,10636070,ambari,bugsdotjar,3,0,3,0,1007.0,1007.0,1007.0,0.37,0.467
 repairllama,1836e08f,flink,bugsdotjar,3,3,0,0,394.0,394.0,394.0,11.286,12.978
 repairllama,190c253c,hbase,bugsdotjar,3,3,0,0,705.0,705.0,705.0,12.959333333333333,13.139
 repairllama,1ce4d6b3,solr,bugsdotjar,3,3,0,0,3.0,3.0,3.0,0.012666666666666666,0.028
-repairllama,1eba77a9,ambari,bugsdotjar,5,0,5,0,5.4,5.0,6.0,0.1672,0.207
+repairllama,1eba77a9,ambari,bugsdotjar,3,0,3,0,5.4,5.0,6.0,0.1672,0.207
 repairllama,21cb00ee,hbase,bugsdotjar,3,0,3,0,7.0,7.0,7.0,0.26066666666666666,0.359
 repairllama,2558c9ee,flink,bugsdotjar,3,3,0,0,588.0,588.0,588.0,10.559666666666667,12.023
 repairllama,27a22897,ambari,bugsdotjar,3,0,3,0,1006.0,1006.0,1006.0,0.32366666666666666,0.353

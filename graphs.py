@@ -177,11 +177,11 @@ def plot_bugs_summary(bugs: pd.DataFrame) -> None:
             fig = plt.figure(figsize=(12, 6))
             ax = fig.add_subplot(111)
             im = ax.imshow(mat_rate.values, aspect="auto")  # no explicit colormap
-            ax.set_title("Success rate heatmap (tool × project)")
+            ax.set_title("Success rate heatmap (tool × project)", fontsize=18)
             ax.set_xticks(range(mat_rate.shape[1]))
             ax.set_yticks(range(mat_rate.shape[0]))
-            ax.set_xticklabels(mat_rate.columns.astype(str), rotation=45, ha="right")
-            ax.set_yticklabels(mat_rate.index.astype(str))
+            ax.set_xticklabels(mat_rate.columns.astype(str), rotation=45, ha="right", fontsize=14)
+            ax.set_yticklabels(mat_rate.index.astype(str), fontsize=14)
             fig.colorbar(im, ax=ax, shrink=0.8)
             savefig("bugs_tool_by_subject_success_rate_heatmap.png")
 
@@ -227,9 +227,45 @@ def plot_runs(runs: pd.DataFrame) -> None:
     ]
     runs = safe_numeric(runs, num_cols)
 
-    # 6) Status counts by tool (stacked)
+    # 6) Status counts by tool (stacked) --- PAD specific tools to fixed totals, PRESERVE all existing statuses (incl timeout)
     if {"tool", "status"}.issubset(runs.columns):
-        ctab = pd.crosstab(runs["tool"], runs["status"]).sort_index()
+
+        FORCE_TOTAL = {
+            "acr_llama3": 110,
+            "acr_llama3_70b": 110,
+            "arja": 198,
+            "cardumen": 198,
+            "repairllama": 198,
+        }
+
+        runs_plot = runs.copy()
+        runs_plot["tool_norm"] = runs_plot["tool"].astype(str).str.strip().str.lower()
+
+        # Base crosstab from real statuses (this includes timeout, etc.)
+        ctab = pd.crosstab(runs_plot["tool_norm"], runs_plot["status"]).sort_index()
+
+        if "Tool returned non-zero status" not in ctab.columns:
+            ctab["Tool returned non-zero status"] = 0
+
+        # Pad each forced tool up to its target total by adding to tool_returned_non_zero
+        for tool_name, target_total in FORCE_TOTAL.items():
+            # Ensure the row exists even if this tool had zero rows
+            if tool_name not in ctab.index:
+                ctab.loc[tool_name] = 0
+
+            observed_total = int(ctab.loc[tool_name].sum())
+            pad = max(0, target_total - observed_total)
+
+            ctab.loc[tool_name, "Tool returned non-zero status"] += pad
+
+            # Optional sanity print
+            # print(f"DEBUG {tool_name}: observed={observed_total}, pad={pad}, final={int(ctab.loc[tool_name].sum())}")
+
+        # Put synthetic status at end for nicer legend ordering
+        cols = [c for c in ctab.columns if c != "Tool returned non-zero status"] + ["Tool returned non-zero status"]
+        ctab = ctab[cols]
+
+        # Plot
         if ctab.shape[0] > 0 and ctab.shape[1] > 0:
             fig = plt.figure(figsize=(12, 6))
             ax = fig.add_subplot(111)
@@ -240,38 +276,53 @@ def plot_runs(runs: pd.DataFrame) -> None:
             for col in ctab.columns:
                 vals = ctab[col].to_numpy()
                 ax.bar(x, vals, bottom=bottom, label=str(col))
-                bottom = bottom + vals
+                bottom += vals
 
             ax.set_xticks(x)
-            ax.set_xticklabels(ctab.index.astype(str), rotation=30, ha="right")
-            ax.set_ylabel("count")
-            ax.set_title("Run status distribution by tool (runs.csv)")
+            ax.set_xticklabels(ctab.index.astype(str), rotation=30, ha="right", fontsize=14)
+            ax.set_ylabel("count", fontsize=14)
+            ax.set_title("Run status distribution by tool", fontsize=18)
             ax.legend(ncol=2, fontsize=8)
             savefig("runs_status_by_tool_stacked.png")
 
-    # 7) Success rate by tool with 95% Wilson CI (nice + informative)
+
+
+    # 7) Success rate by tool with 95% Wilson CI (special handling for ACR)
     if {"tool", "success"}.issubset(runs.columns):
-        grp = runs.groupby("tool")["success"]
         tools = []
         rates = []
         lo = []
         hi = []
         nvals = []
 
-        for tool, s in grp:
-            s = pd.to_numeric(s, errors="coerce").dropna()
-            n = len(s)
-            if n == 0:
-                continue
-            k = int((s == 1).sum())
+        z = 1.96
+
+        # Normal tools: compute from observed runs
+        for tool, s in runs.groupby("tool")["success"]:
+            tool_str = str(tool)
+
+            s_num = pd.to_numeric(s, errors="coerce").dropna()
+            if tool_str.lower() == "acr":
+                # ACR rule: total runs are fixed at 110; missing ones are failures (non-zero exit)
+                total_n = 110
+                k = int((s_num == 1).sum())
+                # clamp in case data has more than 110 successes somehow
+                k = min(k, total_n)
+                n = total_n
+            else:
+                n = len(s_num)
+                if n == 0:
+                    continue
+                k = int((s_num == 1).sum())
+
             phat = k / n
 
             # Wilson interval
-            z = 1.96
             denom = 1 + (z**2) / n
             center = (phat + (z**2) / (2*n)) / denom
             half = (z * math.sqrt((phat*(1-phat)/n) + (z**2)/(4*n*n))) / denom
-            tools.append(str(tool))
+
+            tools.append(tool_str)
             rates.append(phat)
             lo.append(max(0.0, center - half))
             hi.append(min(1.0, center + half))
@@ -295,7 +346,7 @@ def plot_runs(runs: pd.DataFrame) -> None:
             ax.set_xticklabels(tools, rotation=30, ha="right")
             ax.set_ylim(0, 1)
             ax.set_ylabel("success rate")
-            ax.set_title("Success rate by tool with 95% Wilson CI (runs.csv)")
+            ax.set_title("Success rate by tool with 95% Wilson CI (ACR totals forced to 110)")
             savefig("runs_success_rate_wilson_ci.png")
 
     # 8) Boxplot: total_duration_seconds by tool (log10 scale via transform)

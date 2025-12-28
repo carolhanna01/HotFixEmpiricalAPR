@@ -369,8 +369,8 @@ def plot_runs(runs: pd.DataFrame) -> None:
                 fig = plt.figure(figsize=(10, 6))
                 ax = fig.add_subplot(111)
                 ax.boxplot(data, labels=[str(t) for t in counts], showfliers=False)
-                ax.set_ylabel("log10(total_duration_seconds)")
-                ax.set_title("Duration by tool (boxplot, log10 scale) (runs.csv)")
+                ax.set_ylabel("log10(total_duration_seconds)", fontsize=14)
+                ax.set_title("Duration by tool (boxplot, log10 scale)", fontsize=18)
                 plt.setp(ax.get_xticklabels(), rotation=30, ha="right")
                 savefig("runs_duration_boxplot_log10_by_tool.png")
 

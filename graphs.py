@@ -179,12 +179,13 @@ def plot_bugs_summary(bugs: pd.DataFrame) -> None:
             fig = plt.figure(figsize=(12, 6))
             ax = fig.add_subplot(111)
             im = ax.imshow(mat_rate.values, aspect="auto")  # no explicit colormap
-            ax.set_title("Success rate heatmap (tool × project)", fontsize=18)
+            # ax.set_title("Success rate heatmap (tool × project)", fontsize=18)
             ax.set_xticks(range(mat_rate.shape[1]))
             ax.set_yticks(range(mat_rate.shape[0]))
-            ax.set_xticklabels(mat_rate.columns.astype(str), rotation=45, ha="right", fontsize=14)
-            ax.set_yticklabels(mat_rate.index.astype(str), fontsize=14)
-            fig.colorbar(im, ax=ax, shrink=0.8)
+            ax.set_xticklabels(mat_rate.columns.astype(str), rotation=45, ha="right", fontsize=20)
+            ax.set_yticklabels(mat_rate.index.astype(str), fontsize=20)
+            cbar = fig.colorbar(im, ax=ax, fraction=0.08)
+            cbar.ax.tick_params(labelsize=15)
             savefig("bugs_tool_by_subject_success_rate_heatmap.png")
 
             # Runs-found heatmap (volume)
@@ -215,7 +216,7 @@ def plot_bugs_summary(bugs: pd.DataFrame) -> None:
 # ----------------------------
 # Plots from runs.csv
 # ----------------------------
-def plot_runs(runs: pd.DataFrame) -> None:
+def more_plots(runs: pd.DataFrame) -> None:
     if runs.empty:
         return
 
@@ -281,75 +282,76 @@ def plot_runs(runs: pd.DataFrame) -> None:
                 bottom += vals
 
             ax.set_xticks(x)
-            ax.set_xticklabels(ctab.index.astype(str), rotation=30, ha="right", fontsize=14)
-            ax.set_ylabel("count", fontsize=14)
-            ax.set_title("Run status distribution by tool", fontsize=18)
-            ax.legend(ncol=2, fontsize=8)
+            ax.set_xticklabels(ctab.index.astype(str), rotation=30, ha="right", fontsize=20)
+            ax.set_ylabel("count", fontsize=20)
+            ax.tick_params(axis="y", labelsize=20)
+            # ax.set_title("Run status distribution by tool", fontsize=18)
+            ax.legend(fontsize=16)
             savefig("runs_status_by_tool_stacked.png")
 
 
 
     # 7) Success rate by tool with 95% Wilson CI (special handling for ACR)
-    if {"tool", "success"}.issubset(runs.columns):
-        tools = []
-        rates = []
-        lo = []
-        hi = []
-        nvals = []
+    # if {"tool", "success"}.issubset(runs.columns):
+    #     tools = []
+    #     rates = []
+    #     lo = []
+    #     hi = []
+    #     nvals = []
 
-        z = 1.96
+    #     z = 1.96
 
-        # Normal tools: compute from observed runs
-        for tool, s in runs.groupby("tool")["success"]:
-            tool_str = str(tool)
+    #     # Normal tools: compute from observed runs
+    #     for tool, s in runs.groupby("tool")["success"]:
+    #         tool_str = str(tool)
 
-            s_num = pd.to_numeric(s, errors="coerce").dropna()
-            if tool_str.lower() == "acr":
-                # ACR rule: total runs are fixed at 110; missing ones are failures (non-zero exit)
-                total_n = 110
-                k = int((s_num == 1).sum())
-                # clamp in case data has more than 110 successes somehow
-                k = min(k, total_n)
-                n = total_n
-            else:
-                n = len(s_num)
-                if n == 0:
-                    continue
-                k = int((s_num == 1).sum())
+    #         s_num = pd.to_numeric(s, errors="coerce").dropna()
+    #         if tool_str.lower() == "acr":
+    #             # ACR rule: total runs are fixed at 110; missing ones are failures (non-zero exit)
+    #             total_n = 110
+    #             k = int((s_num == 1).sum())
+    #             # clamp in case data has more than 110 successes somehow
+    #             k = min(k, total_n)
+    #             n = total_n
+    #         else:
+    #             n = len(s_num)
+    #             if n == 0:
+    #                 continue
+    #             k = int((s_num == 1).sum())
 
-            phat = k / n
+    #         phat = k / n
 
-            # Wilson interval
-            denom = 1 + (z**2) / n
-            center = (phat + (z**2) / (2*n)) / denom
-            half = (z * math.sqrt((phat*(1-phat)/n) + (z**2)/(4*n*n))) / denom
+    #         # Wilson interval
+    #         denom = 1 + (z**2) / n
+    #         center = (phat + (z**2) / (2*n)) / denom
+    #         half = (z * math.sqrt((phat*(1-phat)/n) + (z**2)/(4*n*n))) / denom
 
-            tools.append(tool_str)
-            rates.append(phat)
-            lo.append(max(0.0, center - half))
-            hi.append(min(1.0, center + half))
-            nvals.append(n)
+    #         tools.append(tool_str)
+    #         rates.append(phat)
+    #         lo.append(max(0.0, center - half))
+    #         hi.append(min(1.0, center + half))
+    #         nvals.append(n)
 
-        if tools:
-            order = np.argsort(rates)[::-1]
-            tools = [tools[i] for i in order]
-            rates = np.array([rates[i] for i in order])
-            lo = np.array([lo[i] for i in order])
-            hi = np.array([hi[i] for i in order])
+    #     if tools:
+    #         order = np.argsort(rates)[::-1]
+    #         tools = [tools[i] for i in order]
+    #         rates = np.array([rates[i] for i in order])
+    #         lo = np.array([lo[i] for i in order])
+    #         hi = np.array([hi[i] for i in order])
 
-            fig = plt.figure(figsize=(10, 6))
-            ax = fig.add_subplot(111)
+    #         fig = plt.figure(figsize=(10, 6))
+    #         ax = fig.add_subplot(111)
 
-            x = np.arange(len(tools))
-            ax.bar(x, rates)
-            ax.errorbar(x, rates, yerr=[rates - lo, hi - rates], fmt="none", capsize=3)
+    #         x = np.arange(len(tools))
+    #         ax.bar(x, rates)
+    #         ax.errorbar(x, rates, yerr=[rates - lo, hi - rates], fmt="none", capsize=3)
 
-            ax.set_xticks(x)
-            ax.set_xticklabels(tools, rotation=30, ha="right")
-            ax.set_ylim(0, 1)
-            ax.set_ylabel("success rate")
-            ax.set_title("Success rate by tool with 95% Wilson CI (ACR totals forced to 110)")
-            savefig("runs_success_rate_wilson_ci.png")
+    #         ax.set_xticks(x)
+    #         ax.set_xticklabels(tools, rotation=30, ha="right")
+    #         ax.set_ylim(0, 1)
+    #         ax.set_ylabel("success rate")
+    #         ax.set_title("Success rate by tool with 95% Wilson CI (ACR totals forced to 110)")
+    #         savefig("runs_success_rate_wilson_ci.png")
 
     # 8) Boxplot: total_duration_seconds by tool (log10 scale via transform)
     if {"tool", "total_duration_seconds"}.issubset(runs.columns):
@@ -366,12 +368,22 @@ def plot_runs(runs: pd.DataFrame) -> None:
 
                 data = [tmp.loc[tmp["tool"] == t, "log10_duration"].to_numpy() for t in counts]
 
-                fig = plt.figure(figsize=(10, 6))
+                fig = plt.figure(figsize=(20, 12))
                 ax = fig.add_subplot(111)
-                ax.boxplot(data, labels=[str(t) for t in counts], showfliers=False)
-                ax.set_ylabel("log10(total_duration_seconds)", fontsize=14)
-                ax.set_title("Duration by tool (boxplot, log10 scale)", fontsize=18)
-                plt.setp(ax.get_xticklabels(), rotation=30, ha="right")
+
+                ax.boxplot(
+                    data,
+                    labels=[str(t) for t in counts],
+                    showfliers=False,
+                    boxprops=dict(linewidth=10),
+                    whiskerprops=dict(linewidth=10),
+                    capprops=dict(linewidth=10),
+                    medianprops=dict(linewidth=14, color="darkred") 
+                )
+
+                ax.set_ylabel("log10(total_duration_seconds)", fontsize=40)
+                plt.setp(ax.get_xticklabels(), rotation=30, ha="right", fontsize=40)
+
                 savefig("runs_duration_boxplot_log10_by_tool.png")
 
     # 9) Scatter: patch_files vs duration, colored by tool (small multiple via legend)
@@ -543,7 +555,7 @@ def plot_runs(runs: pd.DataFrame) -> None:
         if len(agg) > top_n:
             agg = agg.head(top_n)
         
-        fig, ax = plt.subplots(figsize=(max(10, 0.6 * len(agg)), 6))
+        fig, ax = plt.subplots(figsize=(max(12, 0.6 * len(agg)), 6))
         x = np.arange(len(agg.index))
 
         # Drop all-zero rows (log scale can't display them)
@@ -558,19 +570,19 @@ def plot_runs(runs: pd.DataFrame) -> None:
             ax.bar(x, vals, bottom=bottom, label=m)
             bottom += vals
 
-        ax.set_title(f"Patch counts by {group_col} (log scale)", fontsize=18)
-        ax.set_xlabel(group_col, fontsize=14)
-        ax.set_ylabel("count (sum across runs)", fontsize=14)
+        # ax.set_title(f"Patch counts by {group_col} (log scale)", fontsize=18)
+        ax.set_xlabel(group_col, fontsize=20)
+        ax.set_ylabel("count (sum across runs)", fontsize=20)
         ax.set_xticks(x)
-        ax.set_xticklabels(list(agg_plot.index), rotation=45, ha="right")
-
+        ax.set_xticklabels(list(agg_plot.index), rotation=45, ha="right", fontsize=20)
+        ax.tick_params(axis="y", labelsize=20)
         # LOG SCALE
         ax.set_yscale("log")
 
         # Optional: make the lower bound sane so tiny counts are visible
         ax.set_ylim(bottom=max(1, np.nanmin(bottom[bottom > 0]) if np.any(bottom > 0) else 1))
 
-        ax.legend()
+        ax.legend(fontsize=20)
         _save(fig, outdir / f"stacked_by_{group_col}_log.png")
 
 
@@ -613,13 +625,13 @@ def plot_runs(runs: pd.DataFrame) -> None:
                 ax.bar(x, vals, bottom=bottom, label=m)
                 bottom += vals 
 
-            ax.set_title(f"Patch counts by project across tools (log scale)",fontsize=18)
-            ax.set_xlabel("Project",fontsize=14)
-            ax.set_ylabel("count (sum across runs, log scale)",fontsize=14)
+            # ax.set_title(f"Patch counts by project across tools (log scale)",fontsize=18)
+            ax.set_xlabel("Project",fontsize=30)
+            ax.set_ylabel("count (sum across runs)",fontsize=30)
             ax.set_yscale("log")
             ax.set_xticks(x)
-            ax.set_xticklabels(list(agg2.index), rotation=45, ha="right")
-            ax.legend()
+            ax.set_xticklabels(list(agg2.index), rotation=45, ha="right", fontsize=25)
+            ax.legend(fontsize=20)
             _save(fig, outdir / f"stacked_by_{subj_col}_log.png")
 
     print(f"plot_runs: wrote plots to {outdir}")
@@ -638,7 +650,7 @@ def main() -> None:
     plot_bugs_summary(bugs)
     plot_runs(runs)
     plot_acr_patchfiles(acr)
-    plot_runs(runs)
+    more_plots(runs)
 
     print("done.")
 

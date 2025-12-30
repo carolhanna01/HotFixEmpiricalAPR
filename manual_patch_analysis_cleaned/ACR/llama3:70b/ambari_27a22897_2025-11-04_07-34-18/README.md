@@ -25,7 +25,7 @@ URIBuilder uriBuilder = new URIBuilder();
 
 ---
 
-## Patch 2 (signature: `203f567532`)
+## Patch 2 (signature: `203f567532`) CH:SYMPTOM-HIDER
 
 **Source patch_raw files (duplicates):**
 - `ambari_27a22897_2025-11-04_07-34-18/output_0/patch_raw_0.md`

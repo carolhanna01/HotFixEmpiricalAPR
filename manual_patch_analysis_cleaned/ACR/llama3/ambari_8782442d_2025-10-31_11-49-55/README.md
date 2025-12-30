@@ -88,7 +88,7 @@ def handle_request(request):
 
 ---
 
-## Patch 5 (signature: `d88f0cd32b`)
+## Patch 5 (signature: `d88f0cd32b`) CH:SYMPTOM-HIDER
 
 **Source patch_raw files (duplicates):**
 - `ambari_8782442d_2025-10-31_11-49-55/output_1/patch_raw_2.md`

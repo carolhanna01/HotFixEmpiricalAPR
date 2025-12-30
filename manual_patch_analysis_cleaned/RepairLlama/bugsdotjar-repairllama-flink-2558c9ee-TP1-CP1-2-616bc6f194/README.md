@@ -5,7 +5,7 @@
 - Unique patches: **5**
 - Invalid/unparseable patch files: **0**
 
-## Patch 1 (signature: `1be6dc5594`)
+## Patch 1 (signature: `1be6dc5594`) CH:SYMPTOM-HIDER
 
 **Source patch files (duplicates):**
 - `bugsdotjar-repairllama-flink-2558c9ee-TP1-CP1-2-616bc6f194/output/patches/2.patch`
@@ -104,7 +104,7 @@
 
 ---
 
-## Patch 5 (signature: `af0226fcbb`)
+## Patch 5 (signature: `af0226fcbb`) CH:SYMPTOM-HIDER
 
 **Source patch files (duplicates):**
 - `bugsdotjar-repairllama-flink-2558c9ee-TP1-CP1-2-616bc6f194/output/patches/4.patch`

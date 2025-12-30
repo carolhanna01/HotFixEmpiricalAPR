@@ -178,7 +178,7 @@ def interpretKafkaKey(kafka_key):
 
 ---
 
-## Patch 6 (signature: `ae43eaccce`)
+## Patch 6 (signature: `ae43eaccce`) CH:SYMPTOM-HIDING
 
 **Source patch_raw files (duplicates):**
 - `nifi_102a9a2b_2025-10-15_17-15-26/output_2/patch_raw_1.md`

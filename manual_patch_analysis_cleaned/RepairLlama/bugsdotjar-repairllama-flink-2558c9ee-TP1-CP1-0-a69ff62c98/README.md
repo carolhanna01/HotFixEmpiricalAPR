@@ -10,7 +10,7 @@
 
 ---
 
-## Patch 1 (signature: `1be6dc5594`)
+## Patch 1 (signature: `1be6dc5594`) CH:SYMPTOM-HIDER
 
 **Source patch files (duplicates):**
 - `bugsdotjar-repairllama-flink-2558c9ee-TP1-CP1-0-a69ff62c98/output/patches/2.patch`
@@ -84,7 +84,7 @@
 
 ---
 
-## Patch 4 (signature: `af0226fcbb`)
+## Patch 4 (signature: `af0226fcbb`) CH:SYMPTOM-HIDER
 
 **Source patch files (duplicates):**
 - `bugsdotjar-repairllama-flink-2558c9ee-TP1-CP1-0-a69ff62c98/output/patches/4.patch`
@@ -112,3 +112,4 @@
 
 ---
 
+/home/carol/Downloads/Workspaces/HotFixEmpiricalAPR/manual_patch_analysis_cleaned/RepairLlama/bugsdotjar-repairllama-flink-2558c9ee-TP1-CP1-0-a69ff62c98/README.md

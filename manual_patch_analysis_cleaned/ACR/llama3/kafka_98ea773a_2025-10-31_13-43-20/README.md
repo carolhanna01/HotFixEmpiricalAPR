@@ -5,7 +5,7 @@
 - Unique patches: **8**
 - Patch files missing `<patched>` blocks: **0**
 
-## Patch 1 (signature: `0146a74e5f`)
+## Patch 1 (signature: `0146a74e5f`) // CH:SYMPTOM-HIDER
 
 **Source patch_raw files (duplicates):**
 - `kafka_98ea773a_2025-10-31_13-43-20/output_1/patch_raw_0.md`
@@ -142,7 +142,7 @@ def slice(self, position, size):
 
 ---
 
-## Patch 8 (signature: `fbae88a3d4`)
+## Patch 8 (signature: `fbae88a3d4`) // CH:SYMPTOM-HIDER
 
 **Source patch_raw files (duplicates):**
 - `kafka_98ea773a_2025-10-31_13-43-20/output_1/patch_raw_2.md`

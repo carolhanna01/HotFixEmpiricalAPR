@@ -36,7 +36,7 @@
 
 ---
 
-## Patch 2 (signature: `655777536b`)
+## Patch 2 (signature: `655777536b`) CH:SYMPTOM-HIDER
 
 **Source patch files (duplicates):**
 - `bugsdotjar-repairllama-flink-42d8dde0-TP1-CP1-1-f2a1dddde0/output/patches/3.patch`

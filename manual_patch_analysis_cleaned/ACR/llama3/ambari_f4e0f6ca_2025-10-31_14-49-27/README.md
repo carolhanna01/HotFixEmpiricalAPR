@@ -10,7 +10,7 @@
 
 ---
 
-## Patch 1 (signature: `0eb195649d`)
+## Patch 1 (signature: `0eb195649d`)  CH:SYMPTOM-HIDING
 
 **Source patch_raw files (duplicates):**
 - `ambari_f4e0f6ca_2025-10-31_14-49-27/output_1/patch_raw_2.md`
@@ -64,7 +64,7 @@ def decommission(self):
 
 ---
 
-## Patch 3 (signature: `9e64783a0e`)
+## Patch 3 (signature: `9e64783a0e`) CH:SYMPTOM-HIDING
 
 **Source patch_raw files (duplicates):**
 - `ambari_f4e0f6ca_2025-10-31_14-49-27/output_1/patch_raw_0.md`

@@ -61,7 +61,7 @@ def writeNonGlobalConfigurations(outputFile, xmlConfigs):
 
 ---
 
-## Patch 3 (signature: `d4b91b1a45`)
+## Patch 3 (signature: `d4b91b1a45`) CH:SYMPTOM-HIDING
 
 **Source patch_raw files (duplicates):**
 - `ambari_dba3fee7_2025-11-03_16-30-23/output_0/patch_raw_0.md`

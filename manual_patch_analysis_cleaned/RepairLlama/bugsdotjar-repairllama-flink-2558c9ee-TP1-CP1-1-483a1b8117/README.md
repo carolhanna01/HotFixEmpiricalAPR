@@ -104,7 +104,7 @@
 
 ---
 
-## Patch 5 (signature: `af0226fcbb`)
+## Patch 5 (signature: `af0226fcbb`) CH:SYMPTOM-HIDER
 
 **Source patch files (duplicates):**
 - `bugsdotjar-repairllama-flink-2558c9ee-TP1-CP1-1-483a1b8117/output/patches/4.patch`

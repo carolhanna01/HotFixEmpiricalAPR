@@ -1,7 +1,7 @@
 # Empirical Evaluation of Automated Program Repair for Hot Fix Development
 
 This repository contains the artifacts and analysis scripts used in the empirical study
-“Fast Over Flawless: Rethinking Automated Program Repair for Hot Fixing Time-Critical Bugs”.
+“Fast First, Flawless Later: Re-thinking Automated Program Repair for Hot Fixing with HotBugs.jar”.
 
 The repository is provided for **double-blind review**.
 All identifying information has been removed.
